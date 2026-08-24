@@ -1,0 +1,11 @@
+# CloudNerd agent backend — lean deps (or reuse customnerd-backend/venv)
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+sse-starlette>=2.0.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+openai>=1.30.0
+httpx>=0.27.0
+pydantic>=2.0.0
+langgraph>=0.2.0
+langchain-core>=0.2.0
