@@ -285,3 +285,94 @@ def apply_claim_filter(state: AgentState) -> Tuple[str, Dict[str, Any]]:
         },
     )
     return filtered, meta
+
+
+# --- Citation attribution check (RAGVUE / FinGround pattern) ---
+# RAGAS Faithfulness treats unsourced claims as hallucination. A separate failure
+# mode is "model cited a chunk that doesn't back the claim" — a `[n]` marker is
+# in the answer, the article exists, but the cited sentence's content does not
+# appear in article n. RAGVUE (aclanthology.org/2026.eacl-demo.35), MedRAGChecker,
+# and the futureagi 5-layer cascade all flag this as a distinct class.
+#
+# This is a structural proxy (term overlap, not an LLM judge). It is cheap,
+# deterministic, and does not require an extra OpenAI call. The eval harness
+# scores it separately from RAGAS; the answer is still on-topic, but the cite
+# is suspect and warrants review.
+_CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
+
+
+def _split_cited_sentences(answer: str) -> List[Tuple[str, List[int]]]:
+    """Yield (sentence, [n1, n2, ...]) for sentences containing at least one [n]."""
+    parts = re.split(r"(?<=[.!?])\s+", answer or "")
+    out: List[Tuple[str, List[int]]] = []
+    for p in parts:
+        s = (p or "").strip()
+        if not s:
+            continue
+        idxs = [int(n) for n in _CITATION_MARKER_RE.findall(s)]
+        if idxs:
+            out.append((s, idxs))
+    return out
+
+
+def verify_citation_attribution(
+    answer: str,
+    citations: List[dict],
+    *,
+    min_overlap: float = 0.10,
+) -> Dict[str, Any]:
+    """Check each [n] in the answer maps to a real citation whose text overlaps.
+
+    Returns a dict with:
+      - cited_sentence_count: number of sentences containing at least one [n]
+      - attributed_count:     markers that pass the overlap threshold
+      - unverified:           list of {marker, overlap, sentence} for low-overlap flags
+      - missing_citation:     list of {marker, sentence} for out-of-range markers
+      - total_citation_markers: total [n] tokens across the answer
+
+    The check is structural: it tokenizes the cited sentence and the cited
+    article's title/abstract/summary/body, then computes the Jaccard-like
+    overlap on alphanumeric tokens of length >= 4. A cited sentence with
+    "obesity prevalence rose by 12%" cited against an article whose abstract
+    contains the words "obesity", "prevalence", "12" and "%" will pass; a cited
+    sentence with "the study randomized 500 participants" cited against an
+    article with no overlap on those tokens will be flagged.
+    """
+    cited = _split_cited_sentences(answer)
+    unverified: List[Dict[str, Any]] = []
+    missing: List[Dict[str, Any]] = []
+    attributed = 0
+    total_markers = 0
+
+    for sentence, idx_list in cited:
+        for n in idx_list:
+            total_markers += 1
+            if not citations or n < 1 or n > len(citations):
+                missing.append({"marker": f"[{n}]", "sentence": sentence[:120]})
+                continue
+            cite = citations[n - 1] if isinstance(citations[n - 1], dict) else {}
+            cite_text = " ".join(
+                str(cite.get(k) or "")
+                for k in ("title", "abstract", "summary", "answer_body", "body", "question_title")
+            ).lower()
+            sent_tokens = {t for t in re.findall(r"[a-zA-Z0-9_]{4,}", sentence.lower())}
+            cite_tokens = {t for t in re.findall(r"[a-zA-Z0-9_]{4,}", cite_text)}
+            overlap = len(sent_tokens & cite_tokens) / max(len(sent_tokens), 1)
+            if overlap < min_overlap:
+                unverified.append(
+                    {
+                        "marker": f"[{n}]",
+                        "overlap": round(overlap, 3),
+                        "sentence": sentence[:120],
+                    }
+                )
+            else:
+                attributed += 1
+
+    return {
+        "cited_sentence_count": len(cited),
+        "attributed_count": attributed,
+        "unverified": unverified,
+        "missing_citation": missing,
+        "total_citation_markers": total_markers,
+    }

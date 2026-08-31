@@ -405,6 +405,22 @@ def tool_synthesize_answer(
 
     state.final_answer = final_result
     state.citations = replace_invalid_values(citation_generation)
+
+    # Citation attribution check: each [n] marker in the final answer should map
+    # to a real citation whose text overlaps the cited sentence. Flags (not
+    # strips) suspect citations so they can be reviewed in the eval harness.
+    # Logged under citation_attribution step; the answer is still on-topic.
+    try:
+        from agent.tools.claim_filter import verify_citation_attribution
+
+        att = verify_citation_attribution(
+            state.final_answer or "",
+            state.citations or [],
+        )
+        state.log_step("citation_attribution", att)
+    except Exception as e:  # noqa: BLE001 — best-effort diagnostic, never blocks shipping
+        state.log_step("citation_attribution", {"error": repr(e)})
+
     state.done = True
     state.log_step(
         "synthesize_answer",
