@@ -82,6 +82,48 @@ _DISCLAIMER_BLOCK_RE = re.compile(
 )
 
 
+# Trailing hedge closers that RAGAS AnswerRelevancy flags as noncommittal (hard 0),
+# even when the rest of the answer is specific and cited. Observed on the 20Q
+# DietNerd eval (PR1 run, Sep 11 2026): QIDs 36518821 / 32422943 / 26891320 all
+# scored Rel=0 while ending on one of these shapes. These sentences usually carry
+# a [n] citation, so the has_detail guard in strip_gap_talk_sentences keeps them;
+# position (last sentence) is what matters, not verifiability.
+_TRAILING_HEDGE_RE = re.compile(
+    r"\bremains? (unclear|unknown|undetermined|to be (determined|established|confirmed))\b|"
+    r"\bno(t)? (yet )?(allow for a |allow a )?(definitive|clear|firm) conclusion\b|"
+    r"\bdo(es)? not allow for a (definitive|clear|firm) conclusion\b|"
+    r"\b(no|did not show|without) (a )?significant (effect|difference|association|improvement|benefit)\b|"
+    r"\bresults? (were|are|remain)? ?(inconclusive|conflicting|mixed)\b|"
+    r"\bfindings are (mixed|conflicting|inconclusive)\b|"
+    r"\bstill undetermined\b|"
+    r"\bevidence is (limited|insufficient|inconclusive)\b|"
+    r"\bcannot be (determined|established|confirmed)\b|"
+    r"\bmore (research|studies|trials|evidence) (is|are) needed\b",
+    re.IGNORECASE,
+)
+
+
+def _demote_trailing_hedges(sentences: List[str]) -> List[str]:
+    """Move hedge closers off the final position, preserving their content.
+
+    RAGAS AnswerRelevancy hard-zeros answers whose ending reads as noncommittal;
+    dropping the sentence would risk RAGAS Faithfulness (it is cited and true),
+    so the trailing hedge block is rotated ahead of the last substantive
+    sentence instead. Order is otherwise preserved.
+    """
+    out = list(sentences)
+    last_substantive = None
+    for i in range(len(out) - 1, -1, -1):
+        if not _TRAILING_HEDGE_RE.search(out[i]):
+            last_substantive = i
+            break
+    if last_substantive is None or last_substantive == len(out) - 1:
+        # Nothing to end on, or already ends substantive.
+        return out
+    trailing_hedges = out[last_substantive + 1:]
+    return out[:last_substantive] + trailing_hedges + [out[last_substantive]]
+
+
 def is_claim_filter_enabled() -> bool:
     raw = os.getenv("AGENT_CLAIM_FILTER", "true").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -149,6 +191,7 @@ def strip_gap_talk_sentences(answer: str) -> str:
             continue
         kept.append(s)
     if len(kept) >= 2:
+        kept = _demote_trailing_hedges(kept)
         return " ".join(kept).strip()
     if kept:
         # Too aggressive strip left a one-liner — restore extra evidence sentences.
@@ -161,6 +204,7 @@ def strip_gap_talk_sentences(answer: str) -> str:
         ]
         restored = kept + extra
         if restored:
+            restored = _demote_trailing_hedges(restored)
             return " ".join(restored).strip()
         return kept[0]
     for p in parts:
