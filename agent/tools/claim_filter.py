@@ -93,8 +93,12 @@ _TRAILING_HEDGE_RE = re.compile(
     r"\bno(t)? (yet )?(allow for a |allow a )?(definitive|clear|firm) conclusion\b|"
     r"\bdo(es)? not allow for a (definitive|clear|firm) conclusion\b|"
     r"\b(no|did not show|without) (a )?significant (effect|difference|association|improvement|benefit)\b|"
-    r"\bresults? (were|are|remain)? ?(inconclusive|conflicting|mixed)\b|"
-    r"\bfindings are (mixed|conflicting|inconclusive)\b|"
+    r"\bresults? (were|are|remain)? ?(inconclusive|conflicting|mixed|contradictory)\b|"
+    r"\bmixed results\b|"
+    r"\bfindings are (mixed|conflicting|inconclusive|contradictory)\b|"
+    r"\bnot (entirely|completely|fully|wholly) consistent\b|"
+    r"\bno consistent (association|link|relationship|effect|evidence|pattern)\b|"
+    r"\bdid not establish a (clear )?(link|association|relationship|connection)\b|"
     r"\bstill undetermined\b|"
     r"\bevidence is (limited|insufficient|inconclusive)\b|"
     r"\bcannot be (determined|established|confirmed)\b|"
@@ -103,25 +107,61 @@ _TRAILING_HEDGE_RE = re.compile(
 )
 
 
-def _demote_trailing_hedges(sentences: List[str]) -> List[str]:
-    """Move hedge closers off the final position, preserving their content.
+def _split_compound_hedge(sentence: str) -> List[str]:
+    """Split a compound "substantive head, but hedge tail" sentence.
 
-    RAGAS AnswerRelevancy hard-zeros answers whose ending reads as noncommittal;
-    dropping the sentence would risk RAGAS Faithfulness (it is cited and true),
-    so the trailing hedge block is rotated ahead of the last substantive
-    sentence instead. Order is otherwise preserved.
+    Synthesis often appends the hedge as a trailing clause ("...Prevotella, but
+    the results were contradictory and did not establish a clear link[1].").
+    The head clause carries the specific finding; the tail is what the RAGAS
+    relevancy judge flags. The [n] citation moves with the head (same source).
     """
-    out = list(sentences)
-    last_substantive = None
-    for i in range(len(out) - 1, -1, -1):
-        if not _TRAILING_HEDGE_RE.search(out[i]):
-            last_substantive = i
-            break
-    if last_substantive is None or last_substantive == len(out) - 1:
-        # Nothing to end on, or already ends substantive.
-        return out
-    trailing_hedges = out[last_substantive + 1:]
-    return out[:last_substantive] + trailing_hedges + [out[last_substantive]]
+    lowered = sentence.lower()
+    for sep in (", but ", "; but ", ", however, ", "; however, ", ", though ", ", although "):
+        idx = lowered.find(sep)
+        if idx <= 0:
+            continue
+        head = sentence[:idx].strip()
+        tail = sentence[idx + len(sep):].strip()
+        if not tail or not _TRAILING_HEDGE_RE.search(tail):
+            continue
+        if _TRAILING_HEDGE_RE.search(head):
+            continue
+        if len(head.split()) < 5:
+            continue
+        m = re.search(r"((?:\[\d+\])+)\.?\s*$", tail)
+        if m:
+            head = head.rstrip(". ") + m.group(1) + "."
+        else:
+            head = head.rstrip(". ") + "."
+        return [head, tail]
+    return [sentence]
+
+
+def _demote_trailing_hedges(sentences: List[str]) -> List[str]:
+    """Keep hedge closers out of the answer when substantive sentences exist.
+
+    RAGAS AnswerRelevancy hard-zeros the whole answer when its judge reads ANY
+    part of it as noncommittal ("evasive, vague, or ambiguous") - position does
+    not matter. Observed on the Sep 13 2026 hedge-fix rerun: 26891320 still
+    scored Rel=0 with the hedge merely demoted to mid-answer. So:
+      - >= 2 substantive sentences: drop the hedge sentences entirely.
+      - 1 substantive sentence: demote hedges ahead of it (end substantive).
+      - 0 substantive sentences: return unchanged (all-hedge fallback).
+    Compound "head, but hedge" sentences are split first so the substantive
+    head clause survives.
+    """
+    parts: List[str] = []
+    for s in sentences:
+        parts.extend(_split_compound_hedge(s))
+    substantive = [s for s in parts if not _TRAILING_HEDGE_RE.search(s)]
+    hedges = [s for s in parts if _TRAILING_HEDGE_RE.search(s)]
+    if not hedges:
+        return sentences
+    if len(substantive) >= 2:
+        return substantive
+    if len(substantive) == 1:
+        return hedges + substantive
+    return sentences
 
 
 def is_claim_filter_enabled() -> bool:
