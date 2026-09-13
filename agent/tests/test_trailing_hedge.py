@@ -11,8 +11,8 @@ Fixtures are the failing answers from two 20Q DietNerd RAGAS runs:
   first regex missed ("not entirely consistent", "results were
   contradictory", "did not establish a clear link").
 
-Strategy: strip hedge sentences when >= 2 substantive sentences remain,
-demote when 1 remains, leave untouched when the whole answer is a hedge.
+Strategy: strip hedge sentences whenever substantive content remains, and
+leave the answer untouched only when the whole answer is a hedge.
 Compound "head, but hedge" sentences are split so the substantive head
 clause (with its citation) survives.
 
@@ -206,12 +206,36 @@ def run() -> int:
     out = strip_gap_talk_sentences("The evidence is limited. Results are inconclusive.")
     check("all-hedge fallback", bool(out.strip()), "empty output")
 
+    # 7: one substantive sentence plus one hedge must drop the hedge. Keeping
+    # it anywhere still hard-zeros AnswerRelevancy. This was not covered by
+    # the original fixtures and exposed the old one-substantive demotion path.
+    single = (
+        "Vitamin D improved the score by 12% in 400 participants[1]. "
+        "More research is needed[1]."
+    )
+    out = strip_gap_talk_sentences(single)
+    check(
+        "one-substantive hedge removed",
+        out == "Vitamin D improved the score by 12% in 400 participants[1].",
+        f"got: {out!r}",
+    )
+
+    # 8: a compound answer with one useful head keeps the head and its citation
+    # rather than retaining the hedge tail.
+    compound = "The review found lower LDL levels, but the evidence remains unclear[1]."
+    out = strip_gap_talk_sentences(compound)
+    check(
+        "one-head compound hedge removed",
+        out == "The review found lower LDL levels[1].",
+        f"got: {out!r}",
+    )
+
     if failures:
         print(f"FAIL ({len(failures)}):")
         for f in failures:
             print(" -", f)
         return 1
-    print("OK - 22 trailing-hedge regression checks passed")
+    print("OK - 24 trailing-hedge regression checks passed")
     return 0
 
 

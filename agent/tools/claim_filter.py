@@ -144,9 +144,11 @@ def _demote_trailing_hedges(sentences: List[str]) -> List[str]:
     part of it as noncommittal ("evasive, vague, or ambiguous") - position does
     not matter. Observed on the Sep 13 2026 hedge-fix rerun: 26891320 still
     scored Rel=0 with the hedge merely demoted to mid-answer. So:
-      - >= 2 substantive sentences: drop the hedge sentences entirely.
-      - 1 substantive sentence: demote hedges ahead of it (end substantive).
+      - >= 1 substantive sentence: drop the hedge sentences entirely.
       - 0 substantive sentences: return unchanged (all-hedge fallback).
+
+    Keeping a hedge beside a single substantive sentence still hard-zeros the
+    whole answer, so the one-substantive case cannot safely demote it.
     Compound "head, but hedge" sentences are split first so the substantive
     head clause survives.
     """
@@ -157,10 +159,8 @@ def _demote_trailing_hedges(sentences: List[str]) -> List[str]:
     hedges = [s for s in parts if _TRAILING_HEDGE_RE.search(s)]
     if not hedges:
         return sentences
-    if len(substantive) >= 2:
+    if substantive:
         return substantive
-    if len(substantive) == 1:
-        return hedges + substantive
     return sentences
 
 
