@@ -56,3 +56,27 @@ def test_tool_slow(monkeypatch):
 def test_summarize_disabled(monkeypatch):
     monkeypatch.setattr(org,'is_organize_relevant_enabled',lambda:False)
     items=[{'body':'x'}]; assert org.summarize_relevant_articles(items,'q') is items
+
+def test_relevant_summary_prompt_diet(monkeypatch):
+    mod=types.ModuleType('bridge.domain'); mod.is_dietnerd=lambda:True; monkeypatch.setitem(sys.modules,'bridge.domain',mod)
+    assert 'PubMed' in org._relevant_summary_prompt()
+
+
+def test_summarize_one_short_returns_same():
+    item={'body':'short'}; assert org._summarize_one(item,'q') is item
+
+
+def test_summarize_one_with_client(monkeypatch):
+    item={'answer_body':'x'*60}
+    msg=types.SimpleNamespace(content='focused summary'); resp=types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)]); client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **k:resp))); mod=types.ModuleType('openai_executions'); mod.client=client; monkeypatch.setitem(sys.modules,'openai_executions',mod)
+    out=org._summarize_one(item,'q'); assert out['summary']=='focused summary' and len(out['abstract'])==60
+
+
+def test_summarize_one_no_client(monkeypatch):
+    item={'answer_body':'x'*60}; mod=types.ModuleType('openai_executions'); mod.client=None; monkeypatch.setitem(sys.modules,'openai_executions',mod)
+    assert org._summarize_one(item,'q') is item
+
+
+def test_summarize_parallel(monkeypatch):
+    monkeypatch.setattr(org,'is_organize_relevant_enabled',lambda:True); monkeypatch.setattr(org,'_summarize_one',lambda a,q:{**a,'summary':'s'})
+    assert org.summarize_relevant_articles([{'body':'a'},{'body':'b'}],'q')==[{'body':'a','summary':'s'},{'body':'b','summary':'s'}]

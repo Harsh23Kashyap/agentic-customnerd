@@ -44,3 +44,20 @@ def test_diet_defaults(monkeypatch):
     assert domain.get_domain() == "DietNerd"
     assert domain.is_dietnerd() is True
     assert __import__("os").environ["RETRIEVAL_MODE"] == "legacy"
+
+def test_saved_state_dir(monkeypatch,tmp_path):
+    monkeypatch.setattr(domain,'LEGACY_BACKEND_ROOT',tmp_path)
+    assert domain.saved_state_dir('DietNerd')==tmp_path/'saved_states'/'DietNerd'
+
+
+def test_purge_modules(monkeypatch):
+    import sys,types
+    sys.modules['_temp_domain_module']=types.ModuleType('_temp_domain_module')
+    domain._purge_modules(['_temp_domain_module','missing'])
+    assert '_temp_domain_module' not in sys.modules
+
+
+def test_cloud_defaults(monkeypatch):
+    monkeypatch.delenv('RETRIEVAL_MODE',raising=False); domain.apply_domain_defaults('CloudNerd')
+    import os
+    assert os.environ['RETRIEVAL_MODE']=='cascade'

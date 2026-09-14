@@ -69,3 +69,24 @@ def test_dedupe_by_normalized_body():
     first = article(body="Same   body")
     duplicate = article(body="same body")
     assert rel.dedupe_articles([first, duplicate]) == [first]
+
+def test_cap_relevant_articles(monkeypatch):
+    monkeypatch.setenv('AGENT_ADAPTIVE_TOP_K','1'); monkeypatch.setattr(rel,'term_overlap_score',lambda q,a:a['s']); monkeypatch.setattr('agent.tools.rerank.is_rerank_enabled',lambda:False)
+    assert rel.cap_relevant_articles([{'s':1},{'s':2}],'q')==[{'s':2}]
+
+
+def test_mean_overlap_empty():
+    assert rel.mean_domain_overlap('q',[])==0
+
+
+def test_dedupe_by_id():
+    assert len(rel.dedupe_articles([article(answer_id=1),article(answer_id=1)]))==1
+
+def test_env_parsers_invalid(monkeypatch):
+    monkeypatch.setenv('FLOAT_BAD','x'); monkeypatch.setenv('INT_BAD','x')
+    assert rel._env_float('FLOAT_BAD',.2)==.2 and rel._env_int('INT_BAD',3)==3
+
+
+def test_article_text_empty_and_score():
+    assert rel._article_text({})==''
+    assert rel.term_overlap_score('omega',{})==0.0

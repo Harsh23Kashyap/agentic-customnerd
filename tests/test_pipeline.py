@@ -84,3 +84,42 @@ def test_enhanced_research(monkeypatch):
 
 def test_parity_delegates(monkeypatch):
     monkeypatch.setattr(p,'run_enhanced_pipeline',lambda s,**k:'ok'); assert p.run_parity_pipeline(s())=='ok'
+
+def test_research_with_focus(monkeypatch):
+    x=s(); x.search_attempts=1; seen={}
+    monkeypatch.setattr(p,'_search_classify_assess',lambda state,**kw:seen.update(kw) or {'ok':1})
+    monkeypatch.setattr(p,'build_search_focus',lambda *a,**k:'focus')
+    assert p._research_with_focus(x,reason='low')=={'ok':1} and seen['search_focus']=='focus'
+
+
+def test_attempt_overlap_rescue_skipped(monkeypatch):
+    x=s(); monkeypatch.setattr(p,'tool_synthesize_answer',lambda *a,**k:{'skipped':True})
+    assert not p._attempt_overlap_rescue(x)
+
+
+def test_maybe_refuse_finalizes(monkeypatch):
+    x=s(); monkeypatch.setattr(p,'_attempt_overlap_rescue',lambda *a,**k:False); monkeypatch.setattr(p,'finalize_or_refuse_answer',lambda *a,**k:True)
+    assert p._maybe_refuse_with_rescue(x,{'passed':False})
+
+
+def test_enhanced_claim_filter_stops(monkeypatch):
+    setup_flow(monkeypatch); monkeypatch.setattr(p,'_apply_claim_filter_step',lambda *a,**k:True)
+    x=s(); assert p.run_enhanced_pipeline(x) is x
+
+
+def test_enhanced_synth_skip_research(monkeypatch):
+    monkeypatch.setattr(p,'_search_classify_assess',lambda *a,**k:{'needs_research':False,'needs_rescue':False})
+    monkeypatch.setattr(p,'tool_verify_faithfulness',lambda state,pre_synthesis=False,**k:{'passed':True,'answer_fact_overlap':1})
+    count={'n':0}
+    def synth(state,**k): count['n']+=1; state.final_answer='This is a sufficiently detailed answer that contains grounded evidence and citations [1].'; return {'skipped':count['n']==1}
+    monkeypatch.setattr(p,'tool_synthesize_answer',synth); monkeypatch.setattr(p,'_research_with_focus',lambda *a,**k:{'needs_rescue':False}); monkeypatch.setattr(p,'_apply_claim_filter_step',lambda *a,**k:False)
+    x=s(); x.max_search_attempts=2; assert p.run_enhanced_pipeline(x).final_answer and count['n']==2
+
+def test_is_shippable_edge_cases():
+    assert not p._is_shippable_synthesis('short')
+    assert not p._is_shippable_synthesis('I could not find enough evidence to answer this detailed user question with confidence.')
+
+
+def test_apply_filter_sets_filtered_when_equal(monkeypatch):
+    x=s(); x.final_answer='same answer.'; monkeypatch.setattr(p,'is_claim_filter_enabled',lambda:True); monkeypatch.setattr(p,'apply_claim_filter',lambda s:('same answer.',{'kept_claims':1}))
+    assert p._apply_claim_filter_step(x) is False and x.final_answer=='same answer.'

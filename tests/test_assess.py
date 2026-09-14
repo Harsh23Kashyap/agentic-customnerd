@@ -65,3 +65,12 @@ def test_post_verify_policy(monkeypatch):
     monkeypatch.setattr(assess,'post_synthesis_policy',lambda *a,**k:{'passed':True,**k})
     result=assess.tool_verify_faithfulness(s)
     assert result['passed'] and result['has_citations'] and result['ref_markers']==1
+
+def test_verify_pre_error_is_skipped(monkeypatch):
+    install_legacy(monkeypatch); x=st(); monkeypatch.setattr(assess,'get_or_extract_facts',lambda *a,**k:(_ for _ in ()).throw(RuntimeError('boom')))
+    out=assess.tool_verify_faithfulness(x,pre_synthesis=True); assert out['skipped'] and out['reason'].startswith('pre_verify_error')
+
+
+def test_reflect_alias(monkeypatch):
+    monkeypatch.setattr(assess,'tool_verify_faithfulness',lambda *a,**k:{'ok':1})
+    assert assess.tool_reflect_on_answer(st())=={'ok':1}
