@@ -98,3 +98,14 @@ cd ..\customnerd-backend
 | `RETRIEVAL_MODE` | `legacy` / `cascade` | Diet vs Cloud retrieval |
 
 Do **not** commit `variables.env` (secrets). Use `variables.env.template` only.
+
+## Tests
+
+The default test suite does not use API keys or paid external services.
+
+```bash
+python -m pip install -r requirements.txt pytest pytest-cov
+pytest -q
+```
+
+GitHub Actions runs compile checks and the test suite on every push and pull request on Python 3.10-3.12.

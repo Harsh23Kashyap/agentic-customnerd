@@ -5,3 +5,6 @@ __pycache__/
 variables.env
 *.log
 .agent_sessions/
+.pytest_cache/
+.coverage
+htmlcov/
