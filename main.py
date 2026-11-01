@@ -164,6 +164,12 @@ def _run_agent_logic_locked(user_query, session_id, max_date, query_title):
     )
 
 
+def _require_query(user_query: str) -> None:
+    """Refuse a blank question before any session, queue or model call exists."""
+    if not user_query or not user_query.strip():
+        raise HTTPException(status_code=422, detail="user_query must not be blank")
+
+
 @app.post("/process_detailed_combined_query")
 async def process_detailed_combined_query(
     background_tasks: BackgroundTasks,
@@ -178,6 +184,7 @@ async def process_detailed_combined_query(
 ):
     """Compatible entry point with the linear backend (agent ignores PDF/PMID for now)."""
     del background_tasks, search_pubmed, search_pmid, pmids, search_pdf, files
+    _require_query(user_query)
 
     session_id = str(uuid.uuid4())
     update_queues[session_id] = queue.Queue()
