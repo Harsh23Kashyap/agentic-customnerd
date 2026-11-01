@@ -63,15 +63,26 @@ _GAP_TALK_RE = re.compile(
 # Evidence that the cited studies disagree. Never strip these, even without numbers.
 # "findings are conflicting/mixed/inconclusive" used to live in the closer regex and
 # was deleted unless the sentence also carried a stat, citation, or the word "studies".
+# "mixed" is also a verb ("the studies mixed two diets"). That is not a hedge, so
+# the adjective must sit before the evidence noun, or the noun must take a copula
+# ("results were mixed", "the evidence is mixed"). "mixed" followed by a determiner
+# or a number ("mixed the studies", "mixed two diets") is rejected.
+_CONFLICT_ADJECTIVE = r"mixed|conflicting|inconsistent|inconclusive|heterogeneous"
+_EVIDENCE_NOUN = r"evidence|findings|results|literature|data|associations?|studies"
+_COPULA = (
+    r"is|are|was|were|be|been|being|remain|remains|remained|"
+    r"seem|seems|seemed|appear|appears|appeared|look|looks|looked"
+)
 _EVIDENCE_CONFLICT_RE = re.compile(
-    r"\b(?:evidence|findings|results|literature|data|associations?|studies)\b"
-    r"(?:\W+\w+){0,8}\W+"
-    r"\b(?:mixed|conflicting|inconsistent|inconclusive|heterogeneous)\b|"
-    r"\b(?:mixed|conflicting|inconsistent|inconclusive|heterogeneous)\b"
-    r"(?:\W+\w+){0,8}\W+"
-    r"\b(?:evidence|findings|results|literature|data|studies)\b|"
-    r"\b(?:findings|results|evidence|studies) (?:are|were|is|remain|remains) "
-    r"(?:mixed|conflicting|inconsistent|inconclusive|heterogeneous)\b|"
+    rf"\b(?:{_CONFLICT_ADJECTIVE})\b"
+    rf"(?!(?<=mixed)\W+(?:the|a|an|two|both|these|those|their|its|this|that|\d+)\b)"
+    rf"(?:\W+\w+){{0,8}}\W+"
+    rf"\b(?:{_EVIDENCE_NOUN})\b|"
+    rf"\b(?:{_EVIDENCE_NOUN})\b"
+    rf"(?:\W+\w+){{0,8}}\W+"
+    rf"\b(?:{_COPULA})\b"
+    rf"(?:\W+\w+){{0,4}}\W+"
+    rf"\b(?:{_CONFLICT_ADJECTIVE})\b|"
     r"\bnot all studies\b",
     re.IGNORECASE,
 )

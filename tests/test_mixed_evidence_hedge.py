@@ -9,6 +9,7 @@ the repo names the QID and carries an answer field.
 
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import types
@@ -18,7 +19,12 @@ import agent.faith_policy as fp
 import agent.pipeline as pipeline
 import agent.tools.claim_filter as cf
 from agent.state import AgentState
-from prompts.synthesis import SYNTHESIS_CONFLICT_RULE, install_synthesis_conflict_rule
+from prompts import synthesis
+from prompts.synthesis import (
+    SYNTHESIS_CONFLICT_RULE,
+    install_synthesis_conflict_rule,
+    register_synthesis_prompt,
+)
 
 HEDGE_MARKERS = (
     "evidence is mixed",
@@ -161,11 +167,22 @@ def test_conflict_phrases_are_not_empty_closers():
         "The evidence is inconsistent.",
         "The evidence is heterogeneous.",
         "Not all studies agree.",
+        "Possibly, but the evidence is mixed: five reports disagree.",
+        "Results were mixed across 5 studies with 200 participants.",
+        "The evidence on iron status is mixed.",
     ):
-        assert cf._EVIDENCE_CONFLICT_RE.search(phrase)
+        assert cf._EVIDENCE_CONFLICT_RE.search(phrase), phrase
         assert not cf._NONCOMMITTAL_CLOSER_RE.search(phrase)
     assert cf._NONCOMMITTAL_CLOSER_RE.search("Further research is needed.")
     assert cf._NONCOMMITTAL_CLOSER_RE.search("The optimal quantity is undetermined.")
+
+
+def test_mixed_verb_is_not_a_conflict_hedge():
+    """'mixed' as a verb is not a disagreement hedge and must not save a closer."""
+    assert cf._EVIDENCE_CONFLICT_RE.search("The studies mixed two diets.") is None
+    assert cf._EVIDENCE_CONFLICT_RE.search("They mixed the studies.") is None
+    text = "Iron status differed by diet. The studies mixed two diets and further research is needed."
+    assert cf.strip_gap_talk_sentences(text) == "Iron status differed by diet."
 
 
 def test_empty_closers_still_drop():
@@ -276,3 +293,86 @@ def test_synthesis_prompt_leads_with_mixed_evidence(monkeypatch):
         assert "Possibly, but the evidence is mixed" in text
         assert "Never give a flat Yes or No" in text
     assert prompts.EVIDENCE_EXTRACTION_PROMPT == "extract"
+
+
+def test_every_registered_synthesis_name_receives_the_rule(monkeypatch):
+    prompts = types.ModuleType("openai_prompts")
+    for name in synthesis._SYNTHESIS_PROMPT_NAMES:
+        setattr(prompts, name, "Answer from the evidence.")
+    prompts.DIET_SYNTHESIS_PROMPT = "Write the synthesized answer."
+    prompts.GROUNDED_ANSWER = "Write the final answer from the passages."
+    prompts.EVIDENCE_EXTRACTION_PROMPT = "extract"
+    monkeypatch.setitem(sys.modules, "openai_prompts", prompts)
+
+    install_synthesis_conflict_rule()
+
+    for name in synthesis._SYNTHESIS_PROMPT_NAMES:
+        assert getattr(prompts, name).count("When the cited studies disagree") == 1, name
+    assert prompts.DIET_SYNTHESIS_PROMPT.count("When the cited studies disagree") == 1
+    assert prompts.GROUNDED_ANSWER == "Write the final answer from the passages."
+    assert prompts.EVIDENCE_EXTRACTION_PROMPT == "extract"
+
+
+def test_registered_prompt_outside_name_heuristic_receives_the_rule(monkeypatch):
+    """A synthesis prompt whose name matches neither the registry nor the heuristic."""
+    prompts = types.ModuleType("generic_prompts")
+    prompts.GROUNDED_ANSWER = "Write the final answer from the passages."
+    prompts.NOTES = "not a prompt"
+    monkeypatch.setitem(sys.modules, "generic_prompts", prompts)
+    registered = register_synthesis_prompt("GROUNDED_ANSWER")
+    try:
+        install_synthesis_conflict_rule()
+        install_synthesis_conflict_rule()
+        assert prompts.GROUNDED_ANSWER.count("When the cited studies disagree") == 1
+        assert prompts.NOTES == "not a prompt"
+    finally:
+        synthesis._SYNTHESIS_PROMPT_NAMES.discard(registered)
+
+
+def _expr_embeds_conflict_rule(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return "When the cited studies disagree" in node.value
+    if isinstance(node, ast.Name) and node.id == "SYNTHESIS_CONFLICT_RULE":
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _expr_embeds_conflict_rule(node.left) or _expr_embeds_conflict_rule(node.right)
+    if isinstance(node, ast.JoinedStr):
+        return any(_expr_embeds_conflict_rule(part) for part in node.values)
+    return False
+
+
+def test_in_repo_synthesis_prompt_constants_include_the_rule():
+    """Fail when a synthesis prompt constant in this repo omits the conflict rule.
+
+    Legacy modules are patched by name at runtime. Prompts that live here have
+    to embed the rule in the constant, and a new constant whose name is in the
+    registry or matches the synthesis heuristic is not allowed to ship without it.
+    """
+    root = Path(__file__).resolve().parents[1]
+    missing = []
+    for path in list((root / "agent").rglob("*.py")) + list((root / "prompts").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            value = None
+            targets = []
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = [target for target in node.targets if isinstance(target, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                value = node.value
+                targets = [node.target]
+            if value is None:
+                continue
+            for target in targets:
+                if not synthesis._is_synthesis_prompt_name(target.id):
+                    continue
+                if not _expr_embeds_conflict_rule(value):
+                    missing.append(f"{path.relative_to(root)}:{target.id}")
+    assert missing == []
+
+    import importlib
+
+    for mod_name, attr in synthesis._LOCAL_SYNTHESIS_PROMPTS:
+        text = getattr(importlib.import_module(mod_name), attr)
+        assert isinstance(text, str)
+        assert "When the cited studies disagree" in text, attr

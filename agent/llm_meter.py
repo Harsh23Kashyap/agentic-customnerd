@@ -120,13 +120,106 @@ def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> Opti
 
 
 def _price_for(model: str) -> Optional[tuple[float, float]]:
+    """Return the price for an exact model id or a dated snapshot of one.
+
+    Longest key wins, so gpt-4o-mini is not priced as gpt-4o. A snapshot such
+    as gpt-4o-2024-08-06 matches ``key + "-"``. A bare prefix does not: a name
+    like gpt-4o2 must not inherit gpt-4o pricing.
+    """
     name = (model or "").strip().lower()
     if not name or name == "unknown":
         return None
     for key in sorted(_PRICES, key=len, reverse=True):
-        if name == key or name.startswith(key + "-") or name.startswith(key):
+        if name == key or name.startswith(key + "-"):
             return _PRICES[key]
     return None
+
+
+# (filename, function name, firstlineno) through the frame that decided the
+# stage. Only decisive matches are stored, so a shared helper is not pinned to
+# the first caller that used it.
+_STAGE_CACHE: dict[tuple[tuple[str, str, int], ...], str] = {}
+_STAGE_CACHE_MAX = 128
+_METER_FILENAME_CACHE: dict[str, bool] = {str(_METER_FILE): True}
+
+
+def _is_meter_filename(filename: str) -> bool:
+    """True when this frame is agent/llm_meter.py. Avoids a stat on every other file."""
+    if not filename:
+        return False
+    cached = _METER_FILENAME_CACHE.get(filename)
+    if cached is not None:
+        return cached
+    hit = False
+    normalized = filename.replace("\\", "/")
+    if normalized.endswith("/llm_meter.py") or normalized == "llm_meter.py":
+        try:
+            hit = Path(filename).resolve() == _METER_FILE
+        except OSError:
+            hit = False
+    _METER_FILENAME_CACHE[filename] = hit
+    return hit
+
+
+def _stage_in_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for needle, stage in _STAGE_HINTS:
+        if needle in text:
+            return stage
+    return None
+
+
+def _remember_stage(key: tuple[tuple[str, str, int], ...], stage: str) -> None:
+    if key in _STAGE_CACHE:
+        return
+    if len(_STAGE_CACHE) >= _STAGE_CACHE_MAX:
+        _STAGE_CACHE.clear()
+    _STAGE_CACHE[key] = stage
+
+
+def _stage_from_names(names: list[str]) -> str:
+    for blob in names:
+        stage = _stage_in_text(blob or "")
+        if stage:
+            return stage
+    return "Other"
+
+
+def _stage_from_caller() -> str:
+    """Infer a stage from the caller chain without reading source lines.
+
+    ``inspect.stack()`` formats every frame (including a source read) even
+    when the first non-meter caller already names the stage. Walking
+    ``f_back`` and stopping at the first hint uses the same function name and
+    filename, in the same inner-to-outer order, and skips this module the
+    same way. The cache remembers a chain that already decided a stage so a
+    tight loop does not rescan hints; it does not cache "Other", because a
+    shorter chain can be a prefix of a later, decisive one.
+    """
+    frame = inspect.currentframe()
+    key: list[tuple[str, str, int]] = []
+    try:
+        while frame is not None:
+            code = frame.f_code
+            filename = code.co_filename or ""
+            function = code.co_name or ""
+            firstlineno = int(code.co_firstlineno)
+            frame = frame.f_back
+            if _is_meter_filename(filename):
+                continue
+            key.append((filename, function, firstlineno))
+            cache_key = tuple(key)
+            cached = _STAGE_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            stage = _stage_in_text(function) or _stage_in_text(filename)
+            if stage is not None:
+                _remember_stage(cache_key, stage)
+                return stage
+    finally:
+        del frame
+    return "Other"
 
 
 def infer_stage(names: Optional[list[str]] = None) -> str:
@@ -135,21 +228,8 @@ def infer_stage(names: Optional[list[str]] = None) -> str:
     if explicit:
         return explicit
     if names is None:
-        names = []
-        for frame in inspect.stack():
-            try:
-                if frame.filename and Path(frame.filename).resolve() == _METER_FILE:
-                    continue
-            except OSError:
-                pass
-            names.append(frame.function or "")
-            names.append(frame.filename or "")
-    for blob in names:
-        text = blob or ""
-        for needle, stage in _STAGE_HINTS:
-            if needle in text:
-                return stage
-    return "Other"
+        return _stage_from_caller()
+    return _stage_from_names(names)
 
 
 @contextmanager

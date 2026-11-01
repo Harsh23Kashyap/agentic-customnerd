@@ -1,4 +1,6 @@
+import inspect
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -211,6 +213,67 @@ def test_stage_inferred_from_caller_name():
 
     relevance_classifier()
     assert llm_meter.snapshot()["calls"][0]["stage"] == "Relevance"
+
+
+def test_price_matches_exact_name_or_dated_suffix_only():
+    """gpt-4o-2024-08-06 stays on gpt-4o pricing; gpt-4o2 does not inherit it."""
+    assert llm_meter.estimate_cost_usd("gpt-4o", 1_000_000, 0) == 2.5
+    assert llm_meter.estimate_cost_usd("GPT-4o-2024-08-06", 1_000_000, 0) == 2.5
+    assert llm_meter.estimate_cost_usd("gpt-4o-mini", 1_000_000, 0) == 0.15
+    assert llm_meter.estimate_cost_usd("gpt-4o-mini-2024-07-18", 1_000_000, 0) == 0.15
+    assert llm_meter.estimate_cost_usd("gpt-4-turbo", 1_000_000, 0) == 10.0
+    assert llm_meter.estimate_cost_usd("gpt-4-turbo-preview", 1_000_000, 0) == 10.0
+    assert llm_meter.estimate_cost_usd("gpt-4-turbo-2024-04-09", 1_000_000, 0) == 10.0
+    assert llm_meter.estimate_cost_usd("gpt-4", 1_000_000, 0) == 30.0
+    assert llm_meter.estimate_cost_usd("gpt-4-0613", 1_000_000, 0) == 30.0
+    assert llm_meter.estimate_cost_usd("text-embedding-3-small", 1_000_000, 0) == 0.02
+    assert llm_meter.estimate_cost_usd("gpt-4o2", 1_000_000, 0) is None
+    assert llm_meter.estimate_cost_usd("gpt-4oextra", 1_000_000, 0) is None
+    assert llm_meter.estimate_cost_usd("unknown", 1_000_000, 0) is None
+
+
+def _legacy_infer_stage():
+    """Previous inference: full inspect.stack(), skip this meter file, first hint wins."""
+    names = []
+    for frame in inspect.stack():
+        try:
+            filename = frame.filename or ""
+            if filename and Path(filename).resolve() == llm_meter._METER_FILE:
+                continue
+        except OSError:
+            pass
+        names.append(frame.function or "")
+        names.append(frame.filename or "")
+    return llm_meter.infer_stage(names)
+
+
+def test_caller_walk_matches_full_stack_inference():
+    """A bounded walk must infer the same stage as the old full stack walk."""
+
+    def claim_filter_helper():
+        def inner():
+            walked = llm_meter.infer_stage()
+            legacy = _legacy_infer_stage()
+            return walked, legacy
+
+        return inner()
+
+    assert claim_filter_helper() == ("Claim Filter", "Claim Filter")
+
+
+def test_stage_cache_follows_the_outer_caller_not_the_shared_helper():
+    def inner():
+        return llm_meter.infer_stage(), _legacy_infer_stage()
+
+    def tool_search():
+        return inner()
+
+    def summarize_relevant():
+        return inner()
+
+    assert tool_search() == ("Retrieval", "Retrieval")
+    assert tool_search() == ("Retrieval", "Retrieval")
+    assert summarize_relevant() == ("Organize", "Organize")
 
 
 def test_telemetry_csv_and_summary_from_mocked_usage(tmp_path):
